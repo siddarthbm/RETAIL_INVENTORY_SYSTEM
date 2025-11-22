@@ -2,13 +2,12 @@ import streamlit as st
 from auth import login_page, logout_user
 from customer_dashboard import customer_dashboard
 from admin_dashboard import admin_dashboard
-from utils import apply_custom_css
 from db_connection import get_connection # To ensure connection is attempted on startup
 
 # Set page configuration
 st.set_page_config(
-    page_title="Online Store Management",
-    page_icon="🛍️",
+    page_title="Retail Inventory Management",
+    page_icon="📦",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -36,7 +35,7 @@ except Exception as e:
 
 # Main application logic
 def main():
-    st.sidebar.title("Online Store Management")
+    st.sidebar.title("Retail Inventory Management")
 
     if st.session_state['logged_in']:
         st.sidebar.write(f"Logged in as: **{st.session_state['user_name']}** ({st.session_state['role'].capitalize()})")
@@ -64,7 +63,7 @@ def main():
         admin_password = st.sidebar.text_input("Admin Password", type="password", key="admin_password_input")
         if st.sidebar.button("Admin Login"):
             # A very simple admin check. In a real app, you'd have an Admin table
-            if admin_email == "admin@shop.com" and admin_password == "adminpass": # REPLACE WITH SECURE ADMIN CREDENTIALS
+            if admin_email == "admin@retail.com" and admin_password == "admin123": # REPLACE WITH SECURE ADMIN CREDENTIALS
                 st.session_state['logged_in'] = True
                 st.session_state['user_id'] = 0 # Admin user_id can be 0 or a dedicated ID
                 st.session_state['user_name'] = "Administrator"

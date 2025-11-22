@@ -1,324 +1,383 @@
 import streamlit as st
 import pandas as pd
-from utils import fetch_data, execute_query, call_procedure, display_product_card
-from datetime import date
-from db_connection import get_cursor, get_connection
-import mysql.connector as mysql
+from db_connection import fetch_data_as_df, execute_query
+from datetime import date, timedelta
 
 def admin_dashboard():
-    st.title("Admin Dashboard")
+    st.title("🏢 Retail Inventory Management")
     st.sidebar.header("Admin Navigation")
 
-    menu = ["Product Management", "Order Management", "Sales Reports", "Customer Management", "Category Management"]
+    menu = ["📦 Inventory Overview", "➕ Product Management", "📊 Reports", "👥 Customer Management", "📦 Stock Management", "🛒 Order Management"]
     choice = st.sidebar.radio("Go to", menu)
 
-    if choice == "Product Management":
-        product_management_page()
-    elif choice == "Order Management":
-        order_management_page()
-    elif choice == "Sales Reports":
-        sales_reports_page()
-    elif choice == "Customer Management":
-        customer_management_page()
-    elif choice == "Category Management":
-        category_management_page()
+    if choice == "📦 Inventory Overview":
+        inventory_overview()
+    elif choice == "➕ Product Management":
+        product_management()
+    elif choice == "📊 Reports":
+        sales_reports()
+    elif choice == "👥 Customer Management":
+        customer_management()
+    elif choice == "📦 Stock Management":
+        stock_management()
+    elif choice == "🛒 Order Management":
+        order_management()
 
-def product_management_page():
-    st.subheader("Product Management")
-
-    st.write("### Add New Product")
-    with st.form("add_product_form"):
-        name = st.text_input("Product Name")
-        description = st.text_area("Description")
-        price = st.number_input("Price", min_value=0.0, format="%.2f")
-        stock_quantity = st.number_input("Stock Quantity", min_value=0, step=1)
+def inventory_overview():
+    st.subheader("📦 Inventory Overview")
+    
+    # Get inventory summary
+    try:
+        products = fetch_data_as_df("""
+            SELECT 
+                COUNT(*) as total_products,
+                SUM(stock_quantity) as total_stock,
+                SUM(stock_quantity * price) as total_value,
+                COUNT(CASE WHEN stock_quantity <= min_stock_level THEN 1 END) as low_stock_items,
+                COUNT(CASE WHEN stock_quantity = 0 THEN 1 END) as out_of_stock_items
+            FROM Product
+        """)
         
-        categories = fetch_data("SELECT category_id, category_name FROM Category")
-        category_map = {row['category_name']: row['category_id'] for _, row in categories.iterrows()}
-        selected_category_name = st.selectbox("Category", list(category_map.keys()))
-        category_id = category_map.get(selected_category_name)
+        if not products.empty:
+            col1, col2, col3, col4, col5 = st.columns(5)
+            with col1:
+                st.metric("Total Products", products.iloc[0]['total_products'])
+            with col2:
+                st.metric("Total Stock Items", int(products.iloc[0]['total_stock']))
+            with col3:
+                st.metric("Total Value", f"${products.iloc[0]['total_value']:,.2f}")
+            with col4:
+                st.metric("Low Stock Items", products.iloc[0]['low_stock_items'])
+            with col5:
+                st.metric("Out of Stock", products.iloc[0]['out_of_stock_items'])
         
-        image_url = st.text_input("Image URL (optional)")
+        # Low stock alerts
+        low_stock = fetch_data_as_df("""
+            SELECT p.product_id, p.name, p.stock_quantity, p.min_stock_level, c.category_name
+            FROM Product p
+            JOIN Category c ON p.category_id = c.category_id
+            WHERE p.stock_quantity <= p.min_stock_level
+            ORDER BY p.stock_quantity ASC
+            LIMIT 10
+        """)
+        
+        if not low_stock.empty:
+            st.warning("⚠️ Low Stock Alert - Items Need Reordering")
+            st.dataframe(low_stock, use_container_width=True)
+        
+        # Recent inventory transactions
+        transactions = fetch_data_as_df("""
+            SELECT it.transaction_date, p.name, it.transaction_type, it.quantity_change, it.notes
+            FROM Inventory_Transaction it
+            JOIN Product p ON it.product_id = p.product_id
+            ORDER BY it.transaction_date DESC
+            LIMIT 10
+        """)
+        
+        if not transactions.empty:
+            st.subheader("📋 Recent Inventory Transactions")
+            st.dataframe(transactions, use_container_width=True)
+            
+    except Exception as e:
+        st.error(f"Error loading inventory overview: {e}")
 
-        submit_button = st.form_submit_button("Add Product")
-        if submit_button:
-            if not all([name, description, price is not None, stock_quantity is not None, category_id]):
-                st.error("Please fill in all required fields.")
+def product_management():
+    st.subheader("➕ Product Management")
+    
+    tab1, tab2, tab3 = st.tabs(["Add Product", "View Products", "Update Product"])
+    
+    with tab1:
+        with st.form("add_product_form"):
+            st.write("Add New Product")
+            
+            name = st.text_input("Product Name *")
+            description = st.text_area("Description")
+            price = st.number_input("Selling Price", min_value=0.0, format="%.2f")
+            stock_quantity = st.number_input("Initial Stock", min_value=0, step=1)
+            min_stock_level = st.number_input("Minimum Stock Level", min_value=0, step=1, value=10)
+            sku = st.text_input("SKU (Stock Keeping Unit)")
+            supplier = st.text_input("Supplier")
+            cost_price = st.number_input("Cost Price", min_value=0.0, format="%.2f")
+            
+            categories = fetch_data_as_df("SELECT category_id, category_name FROM Category")
+            if not categories.empty:
+                category_map = dict(zip(categories['category_name'], categories['category_id']))
+                selected_category_name = st.selectbox("Category", list(category_map.keys()))
+                category_id = category_map.get(selected_category_name)
             else:
-                success, msg = execute_query(
-                    "INSERT INTO Product (name, description, price, stock_quantity, category_id, image_url) VALUES (%s, %s, %s, %s, %s, %s)",
-                    (name, description, price, stock_quantity, category_id, image_url if image_url else None)
-                )
-                if success:
-                    st.success("Product added successfully!")
-                    st.rerun()
-                else:
-                    st.error(f"Failed to add product: {msg}")
-    
-    st.markdown("---")
-    st.write("### Existing Products")
-    products = fetch_data("SELECT p.product_id, p.name, p.description, p.price, p.stock_quantity, c.category_name, p.average_rating FROM Product p JOIN Category c ON p.category_id = c.category_id ORDER BY p.product_id DESC")
-    
-    if not products.empty:
-        st.dataframe(products)
-        
-        st.write("#### Edit/Delete Product")
-        product_ids = products['product_id'].tolist()
-        selected_product_id = st.selectbox("Select Product ID to Edit/Delete:", product_ids)
-        
-        if selected_product_id:
-            current_product = products[products['product_id'] == selected_product_id].iloc[0]
-
-            with st.form("edit_product_form"):
-                new_name = st.text_input("Product Name", value=current_product['name'])
-                new_description = st.text_area("Description", value=current_product['description'])
-                new_price = st.number_input("Price", min_value=0.0, value=float(current_product['price']), format="%.2f")
-                new_stock_quantity = st.number_input("Stock Quantity", min_value=0, value=int(current_product['stock_quantity']), step=1)
-                
-                current_category_name = current_product['category_name']
-                category_names = list(category_map.keys())
-                selected_new_category_name = st.selectbox("Category", category_names, index=category_names.index(current_category_name))
-                new_category_id = category_map.get(selected_new_category_name)
-                
-                update_button = st.form_submit_button("Update Product")
-                delete_button = st.form_submit_button("Delete Product")
-
-                if update_button:
-                    success, msg = execute_query(
-                        "UPDATE Product SET name = %s, description = %s, price = %s, stock_quantity = %s, category_id = %s WHERE product_id = %s",
-                        (new_name, new_description, new_price, new_stock_quantity, new_category_id, selected_product_id)
-                    )
-                    if success:
-                        st.success("Product updated successfully!")
+                st.error("No categories found. Please add categories first.")
+                category_id = None
+            
+            submit_button = st.form_submit_button("Add Product")
+            
+            if submit_button:
+                if name and price is not None and stock_quantity is not None and category_id:
+                    success = execute_query("""
+                        INSERT INTO Product (name, description, price, stock_quantity, min_stock_level, 
+                                           category_id, sku, supplier, cost_price)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (name, description, price, stock_quantity, min_stock_level, category_id, sku, supplier, cost_price))
+                    
+                    if success is not None:
+                        st.success("Product added successfully!")
                         st.rerun()
                     else:
-                        st.error(f"Failed to update product: {msg}")
+                        st.error("Failed to add product.")
+                else:
+                    st.error("Please fill in all required fields.")
+    
+    with tab2:
+        st.write("View All Products")
+        products = fetch_data_as_df("""
+            SELECT p.product_id, p.name, p.description, p.price, p.stock_quantity, 
+                   p.min_stock_level, p.sku, p.supplier, c.category_name, p.status
+            FROM Product p
+            LEFT JOIN Category c ON p.category_id = c.category_id
+            ORDER BY p.product_id DESC
+        """)
+        
+        if not products.empty:
+            st.dataframe(products, use_container_width=True)
+        else:
+            st.info("No products found.")
+    
+    with tab3:
+        st.write("Update Product")
+        products = fetch_data_as_df("SELECT product_id, name FROM Product ORDER BY name")
+        
+        if not products.empty:
+            product_map = dict(zip(products['name'], products['product_id']))
+            selected_product_name = st.selectbox("Select Product to Update", list(product_map.keys()))
+            selected_product_id = product_map.get(selected_product_name)
+            
+            if selected_product_id:
+                current_product = fetch_data_as_df("""
+                    SELECT * FROM Product WHERE product_id = %s
+                """, (selected_product_id,))
                 
-                if delete_button:
-                    if st.warning("Are you sure you want to delete this product? This action cannot be undone."):
-                        if st.button("Confirm Delete", key="confirm_delete_product"):
-                            success, msg = execute_query("DELETE FROM Product WHERE product_id = %s", (selected_product_id,))
-                            if success:
-                                st.success("Product deleted successfully!")
+                if not current_product.empty:
+                    product = current_product.iloc[0]
+                    
+                    with st.form("update_product_form"):
+                        new_name = st.text_input("Product Name", value=product['name'])
+                        new_description = st.text_area("Description", value=product['description'] or "")
+                        new_price = st.number_input("Price", min_value=0.0, value=float(product['price']), format="%.2f")
+                        new_stock = st.number_input("Stock Quantity", min_value=0, value=int(product['stock_quantity']))
+                        new_min_stock = st.number_input("Min Stock Level", min_value=0, value=int(product['min_stock_level']))
+                        
+                        categories = fetch_data_as_df("SELECT category_id, category_name FROM Category")
+                        if not categories.empty:
+                            category_map = dict(zip(categories['category_name'], categories['category_id']))
+                            current_category = categories[categories['category_id'] == product['category_id']]['category_name'].iloc[0] if product['category_id'] else ""
+                            new_category_name = st.selectbox("Category", list(category_map.keys()), index=list(category_map.keys()).index(current_category) if current_category in category_map else 0)
+                            new_category_id = category_map.get(new_category_name)
+                        
+                        update_button = st.form_submit_button("Update Product")
+                        
+                        if update_button:
+                            success = execute_query("""
+                                UPDATE Product SET name=%s, description=%s, price=%s, stock_quantity=%s, 
+                                                   min_stock_level=%s, category_id=%s
+                                WHERE product_id=%s
+                            """, (new_name, new_description, new_price, new_stock, new_min_stock, new_category_id, selected_product_id))
+                            
+                            if success is not None:
+                                st.success("Product updated successfully!")
                                 st.rerun()
                             else:
-                                st.error(f"Failed to delete product: {msg}")
+                                st.error("Failed to update product.")
+        else:
+            st.info("No products available to update.")
+
+def stock_management():
+    st.subheader("📦 Stock Management")
+    
+    tab1, tab2 = st.tabs(["Update Stock", "Stock Transactions"])
+    
+    with tab1:
+        st.write("Update Product Stock")
+        
+        products = fetch_data_as_df("SELECT product_id, name, stock_quantity FROM Product ORDER BY name")
+        if not products.empty:
+            product_map = dict(zip(products['name'], products['product_id']))
+            selected_product_name = st.selectbox("Select Product", list(product_map.keys()))
+            selected_product_id = product_map.get(selected_product_name)
+            
+            if selected_product_id:
+                current_stock = products[products['product_id'] == selected_product_id]['stock_quantity'].iloc[0]
+                st.info(f"Current Stock: {current_stock}")
+                
+                with st.form("update_stock_form"):
+                    transaction_type = st.selectbox("Transaction Type", ["Purchase (Stock In)", "Sale (Stock Out)", "Adjustment", "Return", "Damage"])
+                    quantity_change = st.number_input("Quantity Change", min_value=1, step=1)
+                    notes = st.text_area("Notes")
+                    
+                    submit_button = st.form_submit_button("Update Stock")
+                    
+                    if submit_button:
+                        # Convert transaction type to database value
+                        transaction_map = {
+                            "Purchase (Stock In)": "purchase",
+                            "Sale (Stock Out)": "sale", 
+                            "Adjustment": "adjustment",
+                            "Return": "return",
+                            "Damage": "damage"
+                        }
+                        
+                        db_transaction_type = transaction_map.get(transaction_type, "adjustment")
+                        actual_change = quantity_change if db_transaction_type in ["purchase", "return"] else -quantity_change
+                        
+                        success = execute_query("""
+                            UPDATE Product SET stock_quantity = stock_quantity + %s 
+                            WHERE product_id = %s
+                        """, (actual_change, selected_product_id))
+                        
+                        if success is not None:
+                            # Record inventory transaction
+                            execute_query("""
+                                INSERT INTO Inventory_Transaction 
+                                (product_id, transaction_type, quantity_change, reference_type, notes, stock_before, stock_after)
+                                VALUES (%s, %s, %s, 'manual', %s, %s, %s)
+                            """, (selected_product_id, db_transaction_type, actual_change, notes, current_stock, current_stock + actual_change))
+                            
+                            st.success(f"Stock updated successfully! New stock: {current_stock + actual_change}")
+                            st.rerun()
+                        else:
+                            st.error("Failed to update stock.")
+        else:
+            st.info("No products found.")
+    
+    with tab2:
+        st.write("Recent Stock Transactions")
+        transactions = fetch_data_as_df("""
+            SELECT it.transaction_date, p.name, it.transaction_type, it.quantity_change, 
+                   it.stock_before, it.stock_after, it.notes
+            FROM Inventory_Transaction it
+            JOIN Product p ON it.product_id = p.product_id
+            ORDER BY it.transaction_date DESC
+            LIMIT 50
+        """)
+        
+        if not transactions.empty:
+            st.dataframe(transactions, use_container_width=True)
+        else:
+            st.info("No transactions found.")
+
+def sales_reports():
+    st.subheader("📊 Sales Reports")
+    
+    # Date range selector
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input("Start Date", date.today() - timedelta(days=30))
+    with col2:
+        end_date = st.date_input("End Date", date.today())
+    
+    tab1, tab2, tab3 = st.tabs(["Sales Summary", "Top Products", "Category Performance"])
+    
+    with tab1:
+        try:
+            sales_data = fetch_data_as_df("""
+                CALL GetSalesReport(%s, %s)
+            """, (start_date, end_date))
+            
+            if not sales_data.empty:
+                st.dataframe(sales_data, use_container_width=True)
+                
+                # Summary metrics
+                total_revenue = sales_data['total_revenue'].sum()
+                total_orders = sales_data['total_orders'].sum()
+                avg_order_value = sales_data['average_order_value'].mean()
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Revenue", f"${total_revenue:,.2f}")
+                with col2:
+                    st.metric("Total Orders", int(total_orders))
+                with col3:
+                    st.metric("Avg Order Value", f"${avg_order_value:.2f}")
+            else:
+                st.info("No sales data found for the selected period.")
+        except Exception as e:
+            st.error(f"Error loading sales data: {e}")
+    
+    with tab2:
+        try:
+            top_products = fetch_data_as_df("CALL GetTopSellingProducts(10)")
+            
+            if not top_products.empty:
+                st.dataframe(top_products, use_container_width=True)
+            else:
+                st.info("No product sales data found.")
+        except Exception as e:
+            st.error(f"Error loading top products: {e}")
+    
+    with tab3:
+        try:
+            category_sales = fetch_data_as_df("""
+                SELECT 
+                    c.category_name,
+                    COUNT(DISTINCT o.order_id) as orders,
+                    SUM(oi.quantity) as items_sold,
+                    SUM(oi.subtotal) as revenue
+                FROM Category c
+                JOIN Product p ON c.category_id = p.category_id
+                JOIN Order_Item oi ON p.product_id = oi.product_id
+                JOIN Orders o ON oi.order_id = o.order_id
+                WHERE DATE(o.order_date) BETWEEN %s AND %s
+                  AND o.status != 'cancelled'
+                GROUP BY c.category_id, c.category_name
+                ORDER BY revenue DESC
+            """, (start_date, end_date))
+            
+            if not category_sales.empty:
+                st.dataframe(category_sales, use_container_width=True)
+            else:
+                st.info("No category sales data found.")
+        except Exception as e:
+            st.error(f"Error loading category data: {e}")
+
+def customer_management():
+    st.subheader("👥 Customer Management")
+    
+    customers = fetch_data_as_df("""
+        SELECT customer_id, name, email, phone, city, state, created_at
+        FROM Customer
+        ORDER BY created_at DESC
+    """)
+    
+    if not customers.empty:
+        st.dataframe(customers, use_container_width=True)
     else:
-        st.info("No products available.")
+        st.info("No customers found.")
 
-def order_management_page():
-    st.subheader("Order Management")
-
-    st.write("### All Orders")
-    all_orders_df = fetch_data(
-        """
-        SELECT o.order_id, c.name AS customer_name, o.order_date, o.total_amount, o.status, o.shipping_address, o.delivery_date, p.payment_method, p.transaction_status
+def order_management():
+    st.subheader("🛒 Order Management")
+    
+    orders = fetch_data_as_df("""
+        SELECT o.order_id, c.name as customer_name, o.order_date, o.total_amount, 
+               o.status, o.payment_status, o.payment_method
         FROM Orders o
         JOIN Customer c ON o.customer_id = c.customer_id
-        LEFT JOIN Payment p ON o.order_id = p.order_id
         ORDER BY o.order_date DESC
-        """
-    )
-
-    if not all_orders_df.empty:
-        st.dataframe(all_orders_df)
-
-        st.write("#### Update Order Status")
-        order_ids = all_orders_df['order_id'].tolist()
-        selected_order_id = st.selectbox("Select Order ID to Update:", order_ids)
-
+    """)
+    
+    if not orders.empty:
+        st.dataframe(orders, use_container_width=True)
+        
+        # Order details
+        selected_order_id = st.selectbox("Select Order to View Details", orders['order_id'])
+        
         if selected_order_id:
-            current_status = all_orders_df[all_orders_df['order_id'] == selected_order_id]['status'].iloc[0]
-
-            # Map DB enum values (lowercase) to display labels
-            status_values = ['pending', 'processing', 'shipped', 'delivered', 'cancelled']
-            status_labels = ['Pending', 'Processing', 'Shipped', 'Delivered', 'Cancelled']
-
-            # Ensure we have a safe index even if DB contains an unexpected value
-            try:
-                current_index = status_values.index(str(current_status).lower())
-            except ValueError:
-                current_index = 0
-
-            selected_label = st.selectbox("New Status:", status_labels, index=current_index)
-            # Convert label back to the underlying enum value used in the DB
-            new_status = status_values[status_labels.index(selected_label)]
-
-            if st.button("Update Order Status"):
-                success, msg = call_procedure("update_order_status", (selected_order_id, new_status))
-                if success:
-                    st.success("Order status updated successfully!")
-                    st.rerun()
-                else:
-                    st.error(f"Failed to update order status: {msg}")
+            order_items = fetch_data_as_df("""
+                SELECT oi.order_item_id, p.name, oi.quantity, oi.price_at_purchase, oi.subtotal
+                FROM Order_Item oi
+                JOIN Product p ON oi.product_id = p.product_id
+                WHERE oi.order_id = %s
+            """, (selected_order_id,))
+            
+            if not order_items.empty:
+                st.write("Order Items:")
+                st.dataframe(order_items, use_container_width=True)
     else:
         st.info("No orders found.")
-
-def sales_reports_page():
-    st.subheader("Sales Reports")
-
-    st.write("### Generate Sales Report by Date Range")
-    start_date = st.date_input("Start Date", value=date.today().replace(day=1))
-    end_date = st.date_input("End Date", value=date.today())
-
-    if st.button("Generate Report"):
-        success, report_data = call_procedure("generate_sales_report", (start_date.isoformat(), end_date.isoformat()))
-        if success and report_data:
-            report_df = pd.DataFrame(report_data)
-            st.dataframe(report_df)
-            st.subheader("Sales Overview")
-            st.metric("Total Revenue", f"₹{report_df['total_revenue'].sum():.2f}")
-            st.metric("Total Orders", report_df['total_orders'].sum())
-            st.metric("Unique Customers", report_df['unique_customers'].sum())
-        else:
-            st.info("No sales data for the selected period.")
-    
-    st.markdown("---")
-    st.write("### Trending Products (Last 30 Days)")
-    limit = st.slider("Number of Trending Products to Show:", 1, 20, 5)
-    success, trending_products_data = call_procedure("get_trending_products", (limit,))
-
-    if success and trending_products_data:
-        trending_df = pd.DataFrame(trending_products_data)
-        st.dataframe(trending_df)
-        
-        st.subheader("Top Selling Products (Graph)")
-        if not trending_df.empty:
-            st.bar_chart(trending_df.set_index('name')['total_quantity_sold'])
-    else:
-        st.info("No trending products found.")
-
-def customer_management_page():
-    st.subheader("Customer Management")
-    st.write("### All Customers")
-    customers_df = fetch_data("SELECT customer_id, name, email, phone, city, state, registration_date FROM Customer ORDER BY registration_date DESC")
-    
-    if not customers_df.empty:
-        st.dataframe(customers_df)
-
-        st.write("#### Customer Details and Actions")
-        customer_ids = customers_df['customer_id'].tolist()
-        selected_customer_id = st.selectbox("Select Customer ID:", customer_ids)
-
-        if selected_customer_id:
-            customer_data = customers_df[customers_df['customer_id'] == selected_customer_id].iloc[0]
-            st.write(f"**Name:** {customer_data['name']}")
-            st.write(f"**Email:** {customer_data['email']}")
-            st.write(f"**Phone:** {customer_data['phone']}")
-            st.write(f"**City:** {customer_data['city']}, {customer_data['state']}")
-            st.write(f"**Registered On:** {customer_data['registration_date']}")
-
-            st.write("##### Customer's Total Spending")
-            # Call the get_customer_total_spending function
-            cursor = get_cursor()
-            try:
-                cursor.execute("SELECT get_customer_total_spending(%s) AS total_spending", (selected_customer_id,))
-                total_spent = cursor.fetchone()['total_spending']
-                st.info(f"Total Amount Spent: ₹{total_spent:.2f}")
-            except mysql.Error as err:
-                st.error(f"Error fetching total spending: {err}")
-            finally:
-                cursor.close()
-            
-            st.write("##### Customer's Orders")
-            success, customer_orders = call_procedure("get_customer_orders", (selected_customer_id,))
-            if success and customer_orders:
-                st.dataframe(pd.DataFrame(customer_orders))
-            else:
-                st.info("This customer has no orders.")
-    else:
-        st.info("No customers registered.")
-
-def category_management_page():
-    st.subheader("Category Management")
-    
-    st.write("### Add New Category")
-    with st.form("add_category_form"):
-        category_name = st.text_input("Category Name", key="new_category_name")
-        description = st.text_area("Description", key="new_category_description")
-        add_button = st.form_submit_button("Add Category")
-        
-        if add_button:
-            if category_name:
-                success, msg = execute_query(
-                    "INSERT INTO Category (category_name, description) VALUES (%s, %s)",
-                    (category_name, description)
-                )
-                if success:
-                    st.success(f"Category '{category_name}' added successfully!")
-                    st.rerun()
-                else:
-                    st.error(f"Failed to add category: {msg}")
-            else:
-                st.error("Category name cannot be empty.")
-    
-    st.markdown("---")
-    st.write("### Existing Categories")
-    categories_df = fetch_data("SELECT category_id, category_name, description FROM Category ORDER BY category_name")
-    
-    if not categories_df.empty:
-        st.dataframe(categories_df)
-        
-        st.write("#### Edit/Delete Category")
-        category_options = {row['category_name']: row['category_id'] for _, row in categories_df.iterrows()}
-        selected_category_name = st.selectbox("Select Category to Edit/Delete:", ["-- Select Category --"] + list(category_options.keys()))
-
-        if selected_category_name != "-- Select Category --":
-            selected_category_id = category_options[selected_category_name]
-            current_category = categories_df[categories_df['category_id'] == selected_category_id].iloc[0]
-
-            st.markdown("---")
-            st.write("#### Add Product to This Category")
-            with st.form("add_product_in_category_form"):
-                name = st.text_input("Product Name", key="cat_prod_name")
-                description = st.text_area("Description", key="cat_prod_desc")
-                price = st.number_input("Price", min_value=0.0, format="%.2f", key="cat_prod_price")
-                stock_quantity = st.number_input("Stock Quantity", min_value=0, step=1, key="cat_prod_stock")
-                st.text_input("Category", value=current_category['category_name'], disabled=True, key="cat_name_display")
-                image_url = st.text_input("Image URL (optional)", key="cat_prod_image")
-
-                add_product_btn = st.form_submit_button("Add Product to Category")
-                if add_product_btn:
-                    if not all([name, description, price is not None, stock_quantity is not None]):
-                        st.error("Please fill in all required fields.")
-                    else:
-                        success, msg = execute_query(
-                            "INSERT INTO Product (name, description, price, stock_quantity, category_id, image_url) VALUES (%s, %s, %s, %s, %s, %s)",
-                            (name, description, price, stock_quantity, selected_category_id, image_url if image_url else None)
-                        )
-                        if success:
-                            st.success(f"Product '{name}' added to category '{current_category['category_name']}' successfully!")
-                            st.rerun()
-                        else:
-                            st.error(f"Failed to add product: {msg}")
-
-            with st.form("edit_category_form"):
-                new_category_name = st.text_input("Category Name", value=current_category['category_name'], key="edit_category_name")
-                new_description = st.text_area("Description", value=current_category['description'], key="edit_category_description")
-                
-                update_button = st.form_submit_button("Update Category")
-                delete_button = st.form_submit_button("Delete Category")
-
-                if update_button:
-                    success, msg = execute_query(
-                        "UPDATE Category SET category_name = %s, description = %s WHERE category_id = %s",
-                        (new_category_name, new_description, selected_category_id)
-                    )
-                    if success:
-                        st.success(f"Category '{new_category_name}' updated successfully!")
-                        st.rerun()
-                    else:
-                        st.error(f"Failed to update category: {msg}")
-                
-                if delete_button:
-                    # Warning for deletion: Products in this category might become NULL
-                    st.warning(f"Deleting category '{current_category['category_name']}' will set 'category_id' to NULL for associated products due to ON DELETE SET NULL constraint. Are you sure?")
-                    if st.button("Confirm Delete Category", key="confirm_delete_category"):
-                        success, msg = execute_query("DELETE FROM Category WHERE category_id = %s", (selected_category_id,))
-                        if success:
-                            st.success(f"Category '{current_category['category_name']}' deleted successfully!")
-                            st.rerun()
-                        else:
-                            st.error(f"Failed to delete category: {msg}")
-    else:
-        st.info("No categories defined.")

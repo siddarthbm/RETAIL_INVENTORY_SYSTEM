@@ -1,68 +1,67 @@
 import streamlit as st
-import bcrypt
 from db_connection import get_connection, get_cursor
 import mysql.connector as mysql
 
-def hash_password(password):
-    """Hashes a password using bcrypt."""
-    hashed_bytes = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
-    return hashed_bytes.decode('utf-8')
-
-def check_password(password, hashed_password):
-    """Checks if a password matches its hash."""
-    # For current demo schema, passwords are stored in plain text in the `password` column
-    # so we just compare the raw values.
-    return password == hashed_password
-
 def register_user(name, email, phone, password, city, state, pin, address):
-    """Registers a new customer."""
-    conn = get_connection()
-    cursor = get_cursor()
+    """Registers a new customer for the retail inventory system."""
+    conn = None
+    cursor = None
     try:
+        conn = get_connection()
+        cursor = conn.cursor(dictionary=True)
         cursor.execute(
             "INSERT INTO Customer (name, email, phone, password, city, state, pin, address) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
             (name, email, phone, password, city, state, pin, address)
         )
-
         conn.commit()
         return True, "Registration successful!"
     except mysql.Error as err:
-        conn.rollback()
+        if conn:
+            conn.rollback()
         if "Duplicate entry" in str(err) and "email" in str(err):
             return False, "Email already registered."
         elif "Duplicate entry" in str(err) and "phone" in str(err):
             return False, "Phone number already registered."
         return False, f"Registration failed: {err}"
     finally:
-        cursor.close()
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
 
 def login_user(email, password):
-    """Authenticates a user."""
-    cursor = get_cursor()
+    """Authenticates a user in the retail inventory system."""
+    conn = None
+    cursor = None
     try:
+        conn = get_connection()
+        cursor = conn.cursor(dictionary=True)
         cursor.execute("SELECT customer_id, name, password FROM Customer WHERE email = %s", (email,))
         user = cursor.fetchone()
-        if user and check_password(password, user['password']):
+        if user and password == user['password']:  # Plain text comparison
             return True, user
-
         else:
             return False, None
     except mysql.Error as err:
         st.error(f"Login error: {err}")
         return False, None
-        cursor.close()
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
 
 def logout_user():
     """Logs out the current user."""
     st.session_state['logged_in'] = False
     st.session_state['user_id'] = None
     st.session_state['user_name'] = None
-    st.session_state['role'] = None 
+    st.session_state['role'] = None
     st.success("Logged out successfully.")
 
 def login_page():
-    """Displays the login/registration page."""
-    st.subheader("Login / Register")
+    """Displays the login/registration page for retail inventory system."""
+    st.subheader("Customer Login / Registration")
 
     login_tab, register_tab = st.tabs(["Login", "Register"])
 
@@ -72,7 +71,7 @@ def login_page():
             email = st.text_input("Email", key="login_email")
             password = st.text_input("Password", type="password", key="login_password")
             submit_button = st.form_submit_button("Login")
-
+            
             if submit_button:
                 if email and password:
                     success, user_data = login_user(email, password)
@@ -80,14 +79,14 @@ def login_page():
                         st.session_state['logged_in'] = True
                         st.session_state['user_id'] = user_data['customer_id']
                         st.session_state['user_name'] = user_data['name']
-                        st.session_state['role'] = 'customer' # Default role for now
-                        st.success(f"Welcome, {user_data['name']}!")
+                        st.session_state['role'] = 'customer'
+                        st.success(f"Welcome to Retail Inventory System, {user_data['name']}!")
                         st.rerun()
                     else:
                         st.error("Invalid email or password.")
                 else:
                     st.error("Please enter both email and password.")
-
+                    
     with register_tab:
         st.write("### New Customer Registration")
         with st.form("register_form"):
@@ -101,7 +100,7 @@ def login_page():
             pin = st.text_input("PIN Code", key="reg_pin")
             address = st.text_area("Address", key="reg_address")
             submit_button = st.form_submit_button("Register")
-
+            
             if submit_button:
                 if password != confirm_password:
                     st.error("Passwords do not match.")
